@@ -1,7 +1,11 @@
 // Copyright (c) 2026 Sub Rosa contributors
 import type { DemoTrace } from "../demo/trace";
 import { isTraceSettled } from "../demo/trace";
+import type { RoundStatus } from "../dashboard/types";
 import type { LiveSnapshot } from "../hooks/useLiveRound";
+import { useDrandCountdown } from "../hooks/useDrandCountdown";
+import { bytesToHex } from "../lib/hex";
+import { classifyRoundPhase } from "../lib/round-phase";
 import { getRoundStatusInfo } from "../lib/round-status";
 import { shortAddr, usdc } from "../lib/format";
 import { useTime } from "../lib/time";
@@ -24,6 +28,18 @@ export function ObserverView({
 }) {
   const { clock } = useTime();
   const settled = isTraceSettled(trace);
+
+  // Phase must come from the shared helper (same one the dashboard uses),
+  // never from local heuristics — this is the single gate that decides
+  // whether a bid amount is safe to render. classifyRoundPhase flips to
+  // Reveal once EITHER the on-chain status says so OR Drand round R has
+  // published — the latter is correct because tlock ciphertext is already
+  // publicly decryptable the moment R is public, independent of whether the
+  // contract has processed open_reveal yet.
+  const drand = useDrandCountdown(trace.meta.revealRound);
+  const roundStatus = (live?.round.status.tag ?? trace.meta.roundStatus) as RoundStatus;
+  const phase = classifyRoundPhase({ status: roundStatus, drandPublished: drand.published });
+  const revealOpen = phase !== "Open";
 
   // When live polling is expected (Live mode) use full state detection;
   // otherwise (Evidence mode) show trace fallback as "found".
@@ -92,10 +108,11 @@ export function ObserverView({
         <tbody>
           {trace.bidders.map((b) => {
             const liveSt = live?.bidStates[b.address];
-            const revealed =
+            const revealedAmount =
               liveSt?.revealed_value != null
                 ? Number(liveSt.revealed_value) / 1e7
                 : b.bidUsdc;
+            const commitmentHex = liveSt?.commitment ? bytesToHex(liveSt.commitment) : null;
             return (
               <tr key={b.address}>
                 <td>
@@ -104,7 +121,19 @@ export function ObserverView({
                   <code className="tiny">{shortAddr(b.address, 10)}</code>
                 </td>
                 <td>{usdc(b.escrowUsdc)}</td>
-                <td>{revealed != null ? usdc(revealed) : "—"}</td>
+                <td>
+                  {revealOpen ? (
+                    revealedAmount != null ? (
+                      usdc(revealedAmount)
+                    ) : (
+                      "—"
+                    )
+                  ) : commitmentHex ? (
+                    <code className="tiny">H={commitmentHex.slice(0, 16)}…</code>
+                  ) : (
+                    "sealed"
+                  )}
+                </td>
                 <td>{liveSt ? (liveSt.valid ? "yes" : "no") : b.valid ? "yes" : "no"}</td>
                 <td>{b.winner ? "✓" : ""}</td>
               </tr>
